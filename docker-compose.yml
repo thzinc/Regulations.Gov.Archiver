@@ -8,7 +8,6 @@ services:
       args:
         version: ${version:-0.0.0-development}
     environment:
-      DataGovApiKey: IcuLG6OQnRjH9c0Er2f3JiXFY4E2NcYFxkmBrp3s
       ElasticsearchUrl: http://elasticsearch:9200
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:6.2.3
