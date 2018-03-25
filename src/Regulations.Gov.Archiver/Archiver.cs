@@ -31,7 +31,7 @@ namespace Regulations.Gov.Archiver
                     });
 
                     indexManager.Tell(result.Documents);
-                    Self.Tell(result.Documents.Count);
+                    Self.Tell(pageOffset + result.Documents.Count);
                 }
                 catch (ApiException ae)
                 {
