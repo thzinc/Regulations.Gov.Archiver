@@ -9,38 +9,63 @@ namespace Regulations.Gov.Archiver
 {
     public class RegulationIndexManager : ReceiveActor
     {
-        private const string Indices = "regulations";
+        public class GetLastPostedDate { }
+        public class LastPostedDate
+        {
+            public DateTimeOffset? PostedDate { get; set; }
+        }
+        private const string Indices = "regulations2";
 
         public RegulationIndexManager(Uri elasticSearchUrl)
         {
-            var config = new ConnectionSettings(elasticSearchUrl);
+            var config = new ConnectionSettings(elasticSearchUrl)
+                .DefaultIndex(Indices)
+                .DefaultMappingFor<DocumentStub>(m => m
+                    .IdProperty(x => x.DocumentId));
             var esClient = new ElasticClient(config);
             var indexConfig = new IndexState
             {
                 Settings = new IndexSettings
                 {
                     NumberOfReplicas = 1,
-                    NumberOfShards = 2,
+                    NumberOfShards = 5,
                 },
             };
 
-            if (!esClient.IndexExists(Indices).Exists)
-            {
-                esClient.CreateIndex(Indices, c => c
-                    .InitializeUsing(indexConfig)
-                    .Mappings(m => m
-                        .Map<DocumentStub>(mp => mp.AutoMap())));
-            }
+            var response = esClient.CreateIndex(Indices, c => c
+                .InitializeUsing(indexConfig)
+                .Mappings(m => m
+                    .Map<DocumentStub>(mp => mp
+                        .AutoMap())));
 
-            Become(() => WaitingForDocuments(esClient));
+            Become(() => Ready(esClient));
         }
 
-        private void WaitingForDocuments(ElasticClient esClient)
+        private void Ready(ElasticClient esClient)
         {
-            ReceiveAsync<IEnumerable<DocumentStub>>(async documents =>
+            ReceiveAsync<GetLastPostedDate>(async message =>
             {
-                var result = await esClient.IndexManyAsync(documents, Indices);
+                var result = await esClient.SearchAsync<DocumentStub>(s => s
+                    .Aggregations(a => a
+                        .Max("last_posted_date", x => x
+                            .Field(p => p.PostedDate))));
+                var lastPostedMs = result.Aggregations.Max("last_posted_date")?.Value;
+                var lastPostedDate = lastPostedMs.HasValue
+                    ? DateTimeOffset.FromUnixTimeMilliseconds((long)lastPostedMs.Value)
+                    : (DateTimeOffset?)null;
+
+                Sender.Tell(new LastPostedDate
+                {
+                    PostedDate = lastPostedDate,
+                });
+            });
+
+            ReceiveAsync<ICollection<DocumentStub>>(async documents =>
+            {
                 var logger = Context.GetLogger();
+                logger.Info($"Indexing {documents.Count} documents");
+
+                var result = await esClient.IndexManyAsync(documents, Indices);
                 if (result.Errors)
                 {
                     logger.Error("Errors received!");

@@ -3,6 +3,8 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using Akka.Actor;
+using Akka.Configuration;
+using Akka.Logger.Serilog;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
 
@@ -23,6 +25,16 @@ namespace Regulations.Gov.Archiver
 
         public void Start()
         {
+            var config = ConfigurationFactory.FromObject(new
+            {
+                akka = new
+                {
+                    loggers = new[]
+                    {
+                        typeof(SerilogLogger).AssemblyQualifiedName,
+                    },
+                },
+            });
             _actorSystem = ActorSystem.Create("Regulations-Gov-Archiver");
             _actorSystem.ActorOf(Props.Create(() => new Archiver(elasticSearchUrl, apiKey)));
             _mre = new ManualResetEventSlim();
