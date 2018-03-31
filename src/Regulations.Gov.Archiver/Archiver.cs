@@ -1,7 +1,6 @@
 using System;
 using System.Linq;
 using System.Net;
-using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Event;
 using Regulations.Gov.Client;
@@ -11,7 +10,7 @@ namespace Regulations.Gov.Archiver
 {
     public class Archiver : ReceiveActor
     {
-        public Archiver(System.Uri elasticSearchUrl, string apiKey)
+        public Archiver(Uri elasticSearchUrl, string apiKey)
         {
             var apiClient = new RegulationsGovClient(apiKey);
             var indexManager = Context.ActorOf(Props.Create(() => new RegulationIndexManager(elasticSearchUrl)));
