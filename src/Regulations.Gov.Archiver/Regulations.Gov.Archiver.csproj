@@ -9,6 +9,8 @@
     <PackageReference Include="Akka.DI.AutoFac" Version="1.3.0" />
     <PackageReference Include="Akka.DI.Core" Version="1.3.5" />
     <PackageReference Include="Akka.Logger.Serilog" Version="1.3.3" />
+    <PackageReference Include="ExpressMapper" Version="1.9.1" />
+    <PackageReference Include="MediaTypeMap" Version="2.1.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="2.0.1" />
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="2.0.1" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="2.0.1" />

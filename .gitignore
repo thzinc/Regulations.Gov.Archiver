@@ -1,3 +1,5 @@
 **/bin
 **/obj
 docker-compose.overrides.yml
+.downloads
+**/.DS_Store

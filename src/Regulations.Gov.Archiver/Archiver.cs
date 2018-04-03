@@ -1,76 +1,104 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using Akka.Actor;
 using Akka.Event;
+using Akka.Util.Internal;
+using ExpressMapper.Extensions;
 using Regulations.Gov.Client;
 using RestEase;
 
 namespace Regulations.Gov.Archiver
 {
+
     public class Archiver : ReceiveActor
     {
-        public Archiver(Uri elasticSearchUrl, string apiKey)
+        public Archiver(Uri elasticSearchUrl, string apiKey, string downloadPath)
         {
-            var apiClient = new RegulationsGovClient(apiKey);
-            var indexManager = Context.ActorOf(Props.Create(() => new RegulationIndexManager(elasticSearchUrl)));
-            Become(() => WaitingForLastPostedDate(indexManager, apiClient));
+            var indexer = Context.ActorOf(Props.Create(() => new Indexer(elasticSearchUrl, downloadPath)));
+            var client = Context.ActorOf(Props.Create(() => new RegulationGovClient(apiKey)));
+            Become(() => Initializing(indexer, client));
         }
 
-        private void WaitingForLastPostedDate(IActorRef indexManager, RegulationsGovClient apiClient)
+        private void Initializing(IActorRef indexer, IActorRef client)
         {
-            Receive<RegulationIndexManager.LastPostedDate>(lastPostedDate =>
+            Receive<string>(_ =>
             {
-                Become(() => Querying(lastPostedDate.PostedDate, indexManager, apiClient));
+                indexer.Tell(new GetMaxIndexByPostedDate());
             });
 
-            indexManager.Tell(new RegulationIndexManager.GetLastPostedDate());
+            Receive<MaxIndexByPostedDate>(max =>
+            {
+                Become(() => Querying(indexer, client, max.Value));
+            });
+
+            Self.Tell("bump");
         }
 
-        private void Querying(DateTimeOffset? postedStartDate, IActorRef indexManager, RegulationsGovClient apiClient)
+        private void Querying(IActorRef indexer, IActorRef client, int startingPageOffset)
         {
-            ReceiveAsync<int>(async pageOffset =>
+            Receive<int>(pageOffset =>
+            {
+                client.Tell(new DocumentsQuery
+                {
+                    SortBy = SortFields.PostedDate,
+                    SortOrder = SortOrderType.Ascending,
+                    ResultsPerPage = 1000,
+                    PageOffset = pageOffset,
+                });
+            });
+
+            Receive<DocumentsQueryResult>(message =>
             {
                 var logger = Context.GetLogger();
-                try
+                var pageOffset = message.Query.PageOffset ?? 0;
+                if (message.Result.Documents == null || message.Result.Documents.Count == 0)
                 {
-                    var query = new DocumentsQuery
-                    {
-                        SortBy = SortFields.PostedDate,
-                        SortOrder = SortOrderType.Ascending,
-                        ResultsPerPage = 1000,
-                        PageOffset = pageOffset,
-                    };
-
-                    logger.Info(string.Join("; ", query.Select(x => $"{x.Key} = {string.Join(", ", x.Value)}")));
-
-                    var result = await apiClient.GetDocuments(query);
-                    if (result.Documents == null || result.Documents.Count == 0)
-                    {
-                        logger.Info("Reached the end. Waiting a bit to get more.");
-                        Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMinutes(1), Self, pageOffset, Self);
-                    }
-                    else
-                    {
-                        logger.Info($"Got {result.Documents.Count} documents, {pageOffset}/{result.TotalNumRecords} total available");
-
-                        indexManager.Tell(result.Documents);
-                        Self.Tell(pageOffset + result.Documents.Count);
-                    }
+                    logger.Info("Reached the end. Waiting a bit to get more.");
+                    Context.System.Scheduler.ScheduleTellOnce(RegulationGovClient.RestPeriod, Self, pageOffset, Self);
+                    return;
                 }
-                catch (ApiException ae) when ((int)ae.StatusCode == 429)
-                {
-                    logger.Error(ae, "Caught API exception; waiting a bit to send resend request");
-                    Context.System.Scheduler.ScheduleTellOnce(TimeSpan.FromMinutes(1), Self, pageOffset, Self);
-                }
-                catch (Exception e)
-                {
-                    logger.Error(e, "Caught other exception; retrying");
-                    Self.Tell(pageOffset);
-                }
+
+                logger.Info($"Got {message.Result.Documents.Count} documents, {pageOffset}/{message.Result.TotalNumRecords} total available");
+
+                var nextPageOffset = pageOffset + message.Result.Documents.Count;
+                Self.Tell(nextPageOffset);
+
+                Self.Tell(message.Result.Documents
+                    .Select((d, i) => d.Map(new Document
+                    {
+                        IndexByPostedDate = pageOffset + i,
+                    }))
+                    .ToList());
             });
 
-            Self.Tell(0);
+            Receive<List<Document>>(documents =>
+            {
+                indexer.Tell(documents);
+                documents
+                    .SelectMany(d => Enumerable.Range(1, d.AttachmentCount)
+                        .Select(an => new GetAttachment
+                        {
+                            Document = d,
+                            AttachmentNumber = an,
+                        }))
+                    .ForEach(client.Tell);
+                documents
+                    .Where(d => d.DocumentType != "Public Submission")
+                    .Select(d => new GetDownload
+                    {
+                        Document = d,
+                    })
+                    .ForEach(client.Tell);
+            });
+
+            Receive<Document>(download =>
+            {
+                indexer.Tell(download);
+            });
+
+            Self.Tell(startingPageOffset);
         }
     }
 }

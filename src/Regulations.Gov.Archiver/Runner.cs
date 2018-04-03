@@ -16,11 +16,13 @@ namespace Regulations.Gov.Archiver
         private ManualResetEventSlim _mre;
         private readonly Uri elasticSearchUrl;
         private readonly string apiKey;
+        private readonly string downloadPath;
 
-        public Runner(Uri elasticSearchUrl, string apiKey)
+        public Runner(Uri elasticSearchUrl, string apiKey, string downloadPath)
         {
             this.elasticSearchUrl = elasticSearchUrl;
             this.apiKey = apiKey;
+            this.downloadPath = downloadPath;
         }
 
         public void Start()
@@ -36,7 +38,7 @@ namespace Regulations.Gov.Archiver
                 },
             });
             _actorSystem = ActorSystem.Create("Regulations-Gov-Archiver");
-            _actorSystem.ActorOf(Props.Create(() => new Archiver(elasticSearchUrl, apiKey)));
+            _actorSystem.ActorOf(Props.Create(() => new Archiver(elasticSearchUrl, apiKey, downloadPath)));
             _mre = new ManualResetEventSlim();
         }
 

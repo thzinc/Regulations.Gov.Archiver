@@ -9,9 +9,15 @@ services:
         version: ${version:-0.0.0-development}
     environment:
       ElasticsearchUrl: http://elasticsearch:9200
+      DownloadPath: /data/downloads
+    volumes:
+      - downloads:/data/downloads
+    restart: on-failure
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:6.2.3
-    container_name: elasticsearch
+    image: thzinc/elasticsearch:${version:-latest}
+    build:
+      context: ./src/elasticsearch
+      dockerfile: Dockerfile
     environment:
       bootstrap.memory_lock: "true"
       cluster.name: docker-cluster
@@ -25,10 +31,14 @@ services:
       - esdata:/usr/share/elasticsearch/data
     ports:
       - "9200"
+    restart: on-failure
   kibana:
     image: docker.elastic.co/kibana/kibana:6.2.3
     ports:
       - "5601"
+    restart: on-failure
 volumes:
   esdata:
+    driver: local
+  downloads:
     driver: local

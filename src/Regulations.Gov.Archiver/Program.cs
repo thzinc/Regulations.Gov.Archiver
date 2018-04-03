@@ -41,8 +41,9 @@ namespace Regulations.Gov.Archiver
 
             var apiKey = Configuration["DataGovApiKey"];
             var elasticSearchUrl = new Uri(Configuration["ElasticsearchUrl"]);
+            var downloadPath = Configuration["DownloadPath"];
 
-            using (var runner = new Runner(elasticSearchUrl, apiKey))
+            using (var runner = new Runner(elasticSearchUrl, apiKey, downloadPath))
             {
                 logger.LogInformation("Starting Regulations.Gov.Archiver...");
                 runner.Start();
