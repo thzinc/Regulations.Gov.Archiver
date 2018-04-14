@@ -1,0 +1,28 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Archiver",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/src/Regulations.Gov.Archiver/bin/Debug/netcoreapp2.0/Regulations.Gov.Archiver.dll",
+            "args": [],
+            "env": {
+                "DataGovApiKey": "IcuLG6OQnRjH9c0Er2f3JiXFY4E2NcYFxkmBrp3s",
+                "ElasticsearchUrl": "http://localhost:29200",
+                "DownloadPath": "/Users/djames/source/thzinc/Regulations.Gov.Archiver/.downloads"
+            },
+            "cwd": "${workspaceFolder}/src/Regulations.Gov.Archiver",
+            "console": "internalConsole",
+            "stopAtEntry": false,
+            "internalConsoleOptions": "openOnSessionStart"
+        },
+        {
+            "name": ".NET Core Attach",
+            "type": "coreclr",
+            "request": "attach",
+            "processId": "${command:pickProcess}"
+        },
+    ]
+}

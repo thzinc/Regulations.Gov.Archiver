@@ -30,12 +30,12 @@ services:
     volumes:
       - esdata:/usr/share/elasticsearch/data
     ports:
-      - "9200"
+      - "29200:9200"
     restart: on-failure
   kibana:
     image: docker.elastic.co/kibana/kibana:6.2.3
     ports:
-      - "5601"
+      - "25601:5601"
     restart: on-failure
 volumes:
   esdata:
