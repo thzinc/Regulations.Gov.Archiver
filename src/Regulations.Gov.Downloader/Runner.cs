@@ -9,10 +9,10 @@ using Akka.Logger.Serilog;
 using Autofac;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
+using Regulations.Gov.Downloader.Actors;
 
-namespace Regulations.Gov.Archiver
+namespace Regulations.Gov.Downloader
 {
-
     public class Runner : IDisposable
     {
         private ActorSystem _actorSystem;
@@ -36,7 +36,7 @@ namespace Regulations.Gov.Archiver
                     },
                 },
             });
-            _actorSystem = ActorSystem.Create("Regulations-Gov-Archiver");
+            _actorSystem = ActorSystem.Create("Regulations-Gov-Downloader");
             var resolver = new AutoFacDependencyResolver(_container, _actorSystem);
             _actorSystem.ActorOf(resolver.Create<Coordinator>(), "Coordinator");
             _mre = new ManualResetEventSlim();

@@ -2,14 +2,12 @@
 using System.Linq;
 using System.Runtime.Loader;
 using System.Threading.Tasks;
-using Nest;
-using Regulations.Gov.Client;
 using Microsoft.Extensions.Configuration;
 using Serilog;
 using Microsoft.Extensions.Logging;
 using Autofac;
 
-namespace Regulations.Gov.Archiver
+namespace Regulations.Gov.Downloader
 {
     public class Program
     {
@@ -40,23 +38,25 @@ namespace Regulations.Gov.Archiver
                 e.SetObserved();
             };
 
-            var apiKey = Configuration["DataGovApiKey"];
-            var elasticSearchUrl = new Uri(Configuration["ElasticsearchUrl"]);
-            var downloadPath = Configuration["DownloadPath"];
-
-            // Setup Autofac
             ContainerBuilder builder = new ContainerBuilder();
-            builder.RegisterInstance<RegulationsGovClient>(new RegulationsGovClient(apiKey));
-            builder.RegisterInstance<ElasticClient>(GetElasticClient(elasticSearchUrl));
-            builder.RegisterInstance<StorageServiceSettings>(new StorageServiceSettings { Path = downloadPath });
-            builder.RegisterType<StorageService>().AsImplementedInterfaces();
-            builder.RegisterType<Coordinator>();
-            builder.RegisterType<Requester>();
+            builder.RegisterInstance(new DataGovCredentials
+            {
+                ApiKey = Configuration["DataGovApiKey"],
+            });
+            builder.RegisterInstance(new GoogleSettings
+            {
+                KeyJsonPath = Configuration["GoogleKeyJsonPath"],
+                Path = Configuration["GooglePath"],
+                User = Configuration["GoogleUser"],
+            });
+            builder.RegisterType<Actors.Coordinator>();
+            builder.RegisterType<Actors.Requester>();
+            builder.RegisterType<Actors.Persister>();
             var container = builder.Build();
 
             using (var runner = new Runner(container))
             {
-                logger.LogInformation("Starting Regulations.Gov.Archiver...");
+                logger.LogInformation("Starting Regulations.Gov.Downloader...");
                 runner.Start();
                 AssemblyLoadContext.Default.Unloading += _ => runner.Stop();
                 Console.CancelKeyPress += (_, ea) =>
@@ -64,21 +64,14 @@ namespace Regulations.Gov.Archiver
                     runner.Stop();
                     ea.Cancel = true;
                 };
-                logger.LogInformation("Regulations.Gov.Archiver started!");
+                logger.LogInformation("Regulations.Gov.Downloader started!");
 
                 runner.Wait();
 
-                logger.LogInformation("Stopping Regulations.Gov.Archiver...");
+                logger.LogInformation("Stopping Regulations.Gov.Downloader...");
             }
 
-            logger.LogInformation("Regulations.Gov.Archiver stopped!");
-        }
-
-        private static ElasticClient GetElasticClient(Uri elasticSearchUrl)
-        {
-            var config = new ConnectionSettings(elasticSearchUrl);
-            var elasticClient = new ElasticClient(config);
-            return elasticClient;
+            logger.LogInformation("Regulations.Gov.Downloader stopped!");
         }
     }
 }

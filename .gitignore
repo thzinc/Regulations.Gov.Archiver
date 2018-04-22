@@ -3,3 +3,5 @@
 docker-compose.overrides.yml
 .downloads
 **/.DS_Store
+.vscode/key.json
+.vscode/launch.json
