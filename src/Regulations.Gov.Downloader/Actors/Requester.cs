@@ -100,7 +100,7 @@ namespace Regulations.Gov.Downloader.Actors
                 var (success, response) = await GetResponse(request, r => _client.GetDownloadAsync(r.Url));
                 if (success)
                 {
-                    var bytes = await response.ResponseMessage.Content.ReadAsByteArrayAsync();                    
+                    var bytes = await response.ResponseMessage.Content.ReadAsByteArrayAsync();
                     var originalFileName = response.ResponseMessage.Content.Headers.ContentDisposition?.FileName?.Trim('"');
                     var contentType = response.ResponseMessage.Content.Headers.ContentType.MediaType;
                     Context.Parent.Tell(new PersistFile
@@ -166,6 +166,11 @@ namespace Regulations.Gov.Downloader.Actors
             else if (!response.ResponseMessage.IsSuccessStatusCode)
             {
                 Context.GetLogger().Error($"Could not download {response.ResponseMessage.RequestMessage.RequestUri}: {response.ResponseMessage.StatusCode} - {response.StringContent}");
+                if ((int)response.ResponseMessage.StatusCode / 100 == 5)
+                {
+                    Context.GetLogger().Info("Requeueing message...");
+                    Self.Tell(message);
+                }
                 return (false, null);
             }
 
@@ -200,17 +205,17 @@ namespace Regulations.Gov.Downloader.Actors
 
                 var pageOffset = request.PageOffset + documentsResponse.Documents.Count;
                 Context.GetLogger().Info($"Discovered {pageOffset} of {documentsResponse.TotalNumRecords} documents");
-                // if (pageOffset < documentsResponse.TotalNumRecords)
-                // {
-                //     Self.Tell(new TRequest
-                //     {
-                //         PageOffset = pageOffset,
-                //     });
-                // }
-                // else
-                // {
+                if (pageOffset < documentsResponse.TotalNumRecords)
+                {
+                    Self.Tell(new TRequest
+                    {
+                        PageOffset = pageOffset,
+                    });
+                }
+                else
+                {
                     Become(() => Downloading(documentIds));
-                // }
+                }
             }
         }
 

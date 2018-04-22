@@ -7,6 +7,7 @@ using Serilog;
 using Microsoft.Extensions.Logging;
 using Autofac;
 using Regulations.Gov.Downloader.Clients;
+using GoogleClient;
 
 namespace Regulations.Gov.Downloader
 {

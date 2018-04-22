@@ -3,7 +3,8 @@ services:
   downloader:
     image: thzinc/regulations-gov-downloader:${version:-latest}
     build:
-      context: ./src/Regulations.Gov.Downloader
+      context: .
+      dockerfile: ./src/Regulations.Gov.Downloader/Dockerfile
       args:
         version: ${version:-0.0.0-development}
     environment:
@@ -17,37 +18,82 @@ services:
       args:
         version: ${version:-0.0.0-development}
     environment:
-      ElasticsearchUrl: http://elasticsearch:9200
-      DownloadPath: /data/downloads
-    volumes:
-      - downloads:/data/downloads
+      ElasticsearchUrl: "http://elasticsearch-ingress:9200,http://elasticsearch-ingest-1:9200,http://elasticsearch-ingest-2:9200"
     restart: on-failure
-  elasticsearch:
+  elasticsearch-ingress:
     image: thzinc/elasticsearch:${version:-latest}
     build:
       context: ./src/elasticsearch
-      dockerfile: Dockerfile
     environment:
       bootstrap.memory_lock: "true"
       cluster.name: docker-cluster
-      discovery.type: single-node
-      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      node.ingest: "false"
+      discovery.zen.ping.unicast.hosts: elasticsearch-ingress,elasticsearch-ingest-1,elasticsearch-ingest-2
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
     ulimits:
       memlock:
         soft: -1
         hard: -1
     volumes:
-      - esdata:/usr/share/elasticsearch/data
+      - esdata-ingress:/usr/share/elasticsearch/data
+    networks:
+      - esnet
     ports:
       - "29200:9200"
     restart: on-failure
+  elasticsearch-ingest-1:
+    image: thzinc/elasticsearch:${version:-latest}
+    build:
+      context: ./src/elasticsearch
+    environment:
+      bootstrap.memory_lock: "true"
+      cluster.name: docker-cluster
+      node.ingest: "true"
+      discovery.zen.ping.unicast.hosts: elasticsearch-ingress,elasticsearch-ingest-1,elasticsearch-ingest-2
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - esdata-ingest-1:/usr/share/elasticsearch/data
+    networks:
+      - esnet
+    restart: on-failure
+  elasticsearch-ingest-2:
+    image: thzinc/elasticsearch:${version:-latest}
+    build:
+      context: ./src/elasticsearch
+    environment:
+      bootstrap.memory_lock: "true"
+      cluster.name: docker-cluster
+      node.ingest: "true"
+      discovery.zen.ping.unicast.hosts: elasticsearch-ingress,elasticsearch-ingest-1,elasticsearch-ingest-2
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - esdata-ingest-2:/usr/share/elasticsearch/data
+    networks:
+      - esnet
+    restart: on-failure
   kibana:
-    image: docker.elastic.co/kibana/kibana:6.2.3
+    image: docker.elastic.co/kibana/kibana:6.2.4
+    environment:
+      ELASTICSEARCH_URL: "http://elasticsearch-ingress:9200"
     ports:
       - "25601:5601"
+    networks:
+      - esnet
     restart: on-failure
 volumes:
-  esdata:
+  esdata-ingress:
     driver: local
-  downloads:
+  esdata-ingest-1:
     driver: local
+  esdata-ingest-2:
+    driver: local
+networks:
+  esnet:

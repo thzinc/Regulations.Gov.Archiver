@@ -1,4 +1,4 @@
-namespace Regulations.Gov.Downloader.Clients
+namespace GoogleClient
 {
     public class GoogleSettings
     {

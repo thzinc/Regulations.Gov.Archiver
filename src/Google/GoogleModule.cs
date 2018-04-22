@@ -3,7 +3,7 @@ using Google.Apis.Auth.OAuth2;
 using Google.Apis.Drive.v3;
 using Google.Apis.Services;
 
-namespace Regulations.Gov.Downloader.Clients
+namespace GoogleClient
 {
     public class GoogleModule : Module
     {
