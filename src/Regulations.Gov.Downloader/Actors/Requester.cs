@@ -1,5 +1,4 @@
 using Akka.Actor;
-using System.Collections.Generic;
 using System.Threading.Tasks;
 using RestEase;
 using System;
@@ -8,72 +7,36 @@ using Akka.Event;
 using System.Net.Http;
 using static Regulations.Gov.Downloader.Actors.Persister;
 using System.Linq;
-using System.IO;
+using Newtonsoft.Json;
+using System.Text;
+using Regulations.Gov.Downloader.Clients;
+using System.Collections.Generic;
 
 namespace Regulations.Gov.Downloader.Actors
 {
     public class Requester : ReceiveActor, IWithUnboundedStash
     {
+        public IStash Stash { get; set; }
         private readonly TimeSpan HardWaitPeriod = TimeSpan.FromMinutes(5);
         private readonly int SoftWaitRequestThreshold = 5;
         private readonly TimeSpan SoftWaitPeriod = TimeSpan.FromMinutes(1);
-        public IStash Stash { get; set; }
+        private readonly int DaysSinceModified = 7;
         private readonly IRegulationsGovApi _client;
-        private readonly DataGovCredentials _credentials;
-
-        public Requester(DataGovCredentials credentials)
+        public Requester(IRegulationsGovApi client)
         {
-            _client = RestClient.For<IRegulationsGovApi>("https://api.data.gov");
-            this._credentials = credentials;
-
-            Become(() => Requesting());
+            _client = client;
+            Become(() => Discovering());
         }
 
-        private void Requesting()
+        private void Discovering()
         {
-            int? lastRateLimitRemaining = null;
-            async Task<(bool Success, Response<T>)> GetResponse<TRequest, T>(TRequest message, Func<TRequest, Task<Response<T>>> request)
-            {
-                Context.GetLogger().Debug($"Expected rate limited requests remaining: {lastRateLimitRemaining}");
-
-                var response = await request(message);
-                response.ResponseMessage.Headers.TryGetValues("X-RateLimit-Remaining", out var rateLimitRemainings);
-                if (int.TryParse(rateLimitRemainings.FirstOrDefault(), out var rateLimitRemaining))
-                {
-                    lastRateLimitRemaining = rateLimitRemaining;
-                    Context.GetLogger().Debug($"Rate limited requests remaining: {lastRateLimitRemaining}");
-                }
-
-                if ((int)response.ResponseMessage.StatusCode == 429)
-                {
-                    Stash.Stash();
-                    Become(() => Waiting(HardWaitPeriod));
-                    return (false, null);
-                }
-                else if (!response.ResponseMessage.IsSuccessStatusCode)
-                {
-                    Context.GetLogger().Error(response.StringContent);
-                    Context.GetLogger().Info("Going to attempt this message again");
-                    Self.Tell(message);
-                    return (false, null);
-                }
-
-                if (lastRateLimitRemaining.HasValue && lastRateLimitRemaining.Value < SoftWaitRequestThreshold)
-                {
-                    Become(() => Waiting(SoftWaitPeriod));
-                }
-
-                return (true, response);
-            }
-
+            var documentIds = new HashSet<string>();
             ReceiveAsync<GetRecentDocuments>(async request =>
             {
-                var (success, response) = await GetResponse(request, r => _client.GetRecentDocumentsAsync(_credentials.ApiKey, 0, r.PageOffset));
+                var (success, response) = await GetResponse(request, r => _client.GetRecentDocumentsAsync(DaysSinceModified, r.PageOffset));
                 if (success)
                 {
                     var documentsResponse = response.GetContent();
-                    documentsResponse.Documents.ForEach(Self.Tell);
-
                     var pageOffset = request.PageOffset + documentsResponse.Documents.Count;
                     if (pageOffset < documentsResponse.TotalNumRecords)
                     {
@@ -82,47 +45,81 @@ namespace Regulations.Gov.Downloader.Actors
                             PageOffset = pageOffset,
                         });
                     }
+                    else
+                    {
+                        Become(() => Downloading(documentIds));
+                    }
+
+                    foreach (var documentReference in documentsResponse.Documents)
+                    {
+                        documentIds.Add(documentReference.DocumentId);
+                        var json = JsonConvert.SerializeObject(documentReference as IDictionary<string, object>);
+                        Context.Parent.Tell(new PersistFile
+                        {
+                            Bytes = Encoding.UTF8.GetBytes(json),
+                            ContentType = "application/json",
+                            DocumentId = documentReference.DocumentId,
+                            Tag = "reference",
+                            OriginalFileName = "reference.json",
+                        });
+                    }
                 }
             });
 
-            ReceiveAsync<DocumentReference>(async documentReference =>
+            Context.GetLogger().Info("Waiting to discover documents...");
+        }
+
+        private void Downloading(HashSet<string> documentIds)
+        {
+            ReceiveAsync<string>(async documentId =>
             {
-                var (success, response) = await GetResponse(documentReference, dr => _client.GetDocumentAsync(_credentials.ApiKey, dr.DocumentId));
+                var (success, response) = await GetResponse(documentId, dr => _client.GetDocumentAsync(documentId));
                 if (success)
                 {
                     var document = response.GetContent();
-                    var json = await response.ResponseMessage.Content.ReadAsStringAsync();
-                    Context.Parent.Tell(new DocumentManifest
+                    var bytes = await response.ResponseMessage.Content.ReadAsByteArrayAsync();
+                    Context.Parent.Tell(new PersistFile
                     {
-                        DocumentReference = documentReference,
-                        DocumentJson = json,
+                        Bytes = bytes,
+                        ContentType = "application/json",
+                        DocumentId = documentId,
+                        Tag = "document",
+                        OriginalFileName = "document.json",
                     });
+                    documentIds.Remove(documentId);
 
-                    document.Attachments
+                    var attachments = document.Attachments
                         .SelectMany(a => a.FileFormats
                             .Select((ff, i) => new GetDownload
                             {
-                                DocumentId = documentReference.DocumentId,
+                                DocumentId = documentId,
                                 Tag = $"attachment.{a.AttachmentOrderNumber}-{i}",
                                 Url = ff,
-                            }))
-                        .ToList()
-                        .ForEach(Self.Tell);
-                    document.FileFormats
+                            }));
+                    var downloads = document.FileFormats
                         .Select((ff, i) => new GetDownload
                         {
-                            DocumentId = documentReference.DocumentId,
+                            DocumentId = documentId,
                             Tag = $"download.{i}",
                             Url = ff,
-                        })
-                        .ToList()
-                        .ForEach(Self.Tell);
+                        });
+
+                    foreach (var getDownloadRequest in attachments.Concat(downloads))
+                    {
+                        documentIds.Add(getDownloadRequest.Key);
+                    }
+                }
+
+                if (!documentIds.Any())
+                {
+                    Stash.UnstashAll();
+                    Become(() => Discovering());
                 }
             });
 
             ReceiveAsync<GetDownload>(async request =>
             {
-                var (success, response) = await GetResponse(request, r => _client.GetDownloadAsync(_credentials.ApiKey, r.Url));
+                var (success, response) = await GetResponse(request, r => _client.GetDownloadAsync(r.Url));
                 if (success)
                 {
                     var bytes = await response.ResponseMessage.Content.ReadAsByteArrayAsync();
@@ -134,7 +131,7 @@ namespace Regulations.Gov.Downloader.Actors
                         .FirstOrDefault();
                     response.ResponseMessage.Headers.TryGetValues("Content-Type", out var contentTypes);
                     var contentType = contentTypes.FirstOrDefault();
-                    Context.Parent.Tell(new Download
+                    Context.Parent.Tell(new PersistFile
                     {
                         DocumentId = request.DocumentId,
                         Tag = request.Tag,
@@ -142,10 +139,22 @@ namespace Regulations.Gov.Downloader.Actors
                         OriginalFileName = originalFileName,
                         ContentType = contentType,
                     });
+                    documentIds.Remove(request.Key);
+                }
+
+                if (!documentIds.Any())
+                {
+                    Stash.UnstashAll();
+                    Become(() => Discovering());
                 }
             });
 
-            Context.System.Scheduler.ScheduleTellRepeatedly(TimeSpan.Zero, TimeSpan.FromDays(1), Self, new GetRecentDocuments(), Self);
+            ReceiveAny(_ => Stash.Stash());
+
+            Context.GetLogger().Info($"Downloading {documentIds.Count} documents...");
+            documentIds
+                .ToList()
+                .ForEach(Self.Tell);
         }
 
         private void Waiting(TimeSpan waitPeriod)
@@ -153,7 +162,7 @@ namespace Regulations.Gov.Downloader.Actors
             Receive<Resume>(_ =>
             {
                 Stash.UnstashAll();
-                Become(() => Requesting());
+                UnbecomeStacked();
             });
 
             ReceiveAny(_ => Stash.Stash());
@@ -162,58 +171,51 @@ namespace Regulations.Gov.Downloader.Actors
             Context.System.Scheduler.ScheduleTellOnce(waitPeriod, Self, new Resume(), Self);
         }
 
-        #region Messages
-        public class Resume { }
-        public class GetRecentDocuments
+        private async Task<(bool Success, Response<T>)> GetResponse<TRequest, T>(TRequest message, Func<TRequest, Task<Response<T>>> request)
         {
-            public int PageOffset { get; set; }
+            var response = await request(message);
+            response.ResponseMessage.Headers.TryGetValues("X-RateLimit-Remaining", out var rateLimitRemainings);
+            if (int.TryParse(rateLimitRemainings.FirstOrDefault(), out var rateLimitRemaining))
+            {
+                Context.GetLogger().Debug($"rateLimitRemaining: {rateLimitRemaining}");
+            }
+            else
+            {
+                rateLimitRemaining = int.MaxValue;
+            }
+
+            if ((int)response.ResponseMessage.StatusCode == 429)
+            {
+                Context.GetLogger().Warning($"Over rate limit request: {response.StringContent}");
+                Stash.Stash();
+                BecomeStacked(() => Waiting(HardWaitPeriod));
+                return (false, null);
+            }
+            else if (!response.ResponseMessage.IsSuccessStatusCode)
+            {
+                Context.GetLogger().Error(response.StringContent);
+                Context.GetLogger().Info("Going to attempt this message again");
+                Self.Tell(message);
+                return (false, null);
+            }
+
+            if (rateLimitRemaining < SoftWaitRequestThreshold)
+            {
+                Become(() => Waiting(SoftWaitPeriod));
+            }
+
+            return (true, response);
         }
-        public class GetDownload
+
+        #region Messages
+        private class Resume { }
+        private class GetDownload
         {
             public string DocumentId { get; set; }
             public string Tag { get; set; }
             public string Url { get; set; }
+            public string Key => $"{DocumentId}.{Tag}";
         }
         #endregion
-
-        [AllowAnyStatusCode]
-        public interface IRegulationsGovApi
-        {
-            [Get("/regulations/v3/documents.json?rpp=1000")]
-            Task<Response<DocumentsResponse>> GetRecentDocumentsAsync(string api_key, int daysSinceModified, int po);
-
-            [Get("/regulations/v3/documents.json?rpp=1000&sb=postedDate&so=ASC")]
-            Task<Response<DocumentsResponse>> GetDocumentsAsync(string api_key, int po);
-
-            [Get("/regulations/v3/document.json")]
-            Task<Response<Document>> GetDocumentAsync(string api_key, string documentId);
-
-            [Get("{url}")]
-            Task<Response<Stream>> GetDownloadAsync(string api_key, [Path(UrlEncode = false)]string url);
-        }
-
-        public class DocumentsResponse
-        {
-            public List<DocumentReference> Documents { get; set; } = new List<DocumentReference>();
-            public long TotalNumRecords { get; set; }
-        }
-
-        public class DocumentReference : Dictionary<string, object>
-        {
-            public string DocumentId => (string)this["documentId"];
-            public string DocketId => (string)this["docketId"];
-        }
-
-        public class Document
-        {
-            public List<Attachment> Attachments { get; set; } = new List<Attachment>();
-            public List<string> FileFormats { get; set; } = new List<string>();
-        }
-
-        public class Attachment
-        {
-            public int AttachmentOrderNumber { get; set; }
-            public List<string> FileFormats { get; set; } = new List<string>();
-        }
     }
 }

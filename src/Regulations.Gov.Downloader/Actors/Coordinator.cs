@@ -16,10 +16,11 @@ namespace Regulations.Gov.Downloader.Actors
             var requester = Context.ActorOf(Context.DI().Props<Requester>());
             var persister = Context.ActorOf(Context.DI().Props<Persister>());
 
-            Receive<DocumentManifest>(documentManifest => persister.Tell(documentManifest));
-            Receive<Download>(download => persister.Tell(download));
+            Receive<PersistFile>(download => persister.Tell(download));
 
             ReceiveAny(_ => Context.GetLogger().Info("Received unknown message"));
+
+            Context.System.Scheduler.ScheduleTellRepeatedly(TimeSpan.Zero, TimeSpan.FromDays(1), requester, new GetRecentDocuments(), Self);
         }
 
         #region Messages

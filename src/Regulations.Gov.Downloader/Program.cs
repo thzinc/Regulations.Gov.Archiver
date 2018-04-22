@@ -6,6 +6,7 @@ using Microsoft.Extensions.Configuration;
 using Serilog;
 using Microsoft.Extensions.Logging;
 using Autofac;
+using Regulations.Gov.Downloader.Clients;
 
 namespace Regulations.Gov.Downloader
 {
@@ -39,16 +40,8 @@ namespace Regulations.Gov.Downloader
             };
 
             ContainerBuilder builder = new ContainerBuilder();
-            builder.RegisterInstance(new DataGovCredentials
-            {
-                ApiKey = Configuration["DataGovApiKey"],
-            });
-            builder.RegisterInstance(new GoogleSettings
-            {
-                KeyJsonPath = Configuration["GoogleKeyJsonPath"],
-                Path = Configuration["GooglePath"],
-                User = Configuration["GoogleUser"],
-            });
+            builder.RegisterModule(new RegulationsGovClientModule(Configuration["DataGovApiKey"]));
+            builder.RegisterModule(new GoogleModule(Configuration["GoogleKeyJsonPath"], Configuration["GoogleDriveUser"], Configuration["GoogleDrivePath"]));
             builder.RegisterType<Actors.Coordinator>();
             builder.RegisterType<Actors.Requester>();
             builder.RegisterType<Actors.Persister>();

@@ -1,135 +1,115 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Event;
-using Google.Apis.Auth.OAuth2;
 using Google.Apis.Drive.v3;
-using Google.Apis.Drive.v3.Data;
-using Google.Apis.Services;
 using Newtonsoft.Json;
+using Regulations.Gov.Downloader.Clients;
 
 namespace Regulations.Gov.Downloader.Actors
 {
     public class Persister : ReceiveActor
     {
-        public Persister(GoogleSettings settings)
+        private readonly DriveService _service;
+        private readonly Dictionary<string, string> _folderIdsByName = new Dictionary<string, string>();
+
+        public Persister(DriveService service, GoogleSettings settings)
         {
-            var credential = GoogleCredential.FromFile(settings.KeyJsonPath)
-                .CreateScoped(DriveService.Scope.Drive)
-                .CreateWithUser(settings.User);
+            _service = service;
+            Become(() => Initializing(settings.Path));
+        }
 
-            var service = new DriveService(new BaseClientService.Initializer
+        private void Initializing(string path)
+        {
+            ReceiveAsync<string>(async _ =>
             {
-                HttpClientInitializer = credential,
-                ApplicationName = GetType().FullName,
+                var rootFolder = await CreateFolder("root", path);
+                Become(() => Persisting(rootFolder));
             });
-            var folderIdsByName = new Dictionary<string, string>();
-            string GetOrAddFolder(string name, string parentId = null)
+
+            Self.Tell("bump");
+        }
+
+        private void Persisting(string rootFolder)
+        {
+            ReceiveAsync<PersistFile>(async download =>
             {
-                const string folderMimeType = "application/vnd.google-apps.folder";
-
-                if (folderIdsByName.TryGetValue(name, out var folderId)) return folderId;
-
-                var request = service.Files.List();
-                request.Q = $"mimeType = '{folderMimeType}'";
-                if (parentId != null)
+                var folder = await CreateFolder(rootFolder, download.DocumentId);
+                var sanitizedOriginalFileName = Regex.Replace(download.OriginalFileName, @"\W", "-");
+                var extension = Path.GetExtension(download.OriginalFileName);
+                var file = new Google.Apis.Drive.v3.Data.File
                 {
-                    request.Q += $" and '{parentId}' in parents";
-                }
-                request.Spaces = "drive";
-                request.Fields = "files(name,id)";
-                var result = request.Execute();
+                    Name = $"{download.Tag}{extension}",
+                    Parents = new[] { folder },
+                    MimeType = download.ContentType,
+                    OriginalFilename = download.OriginalFileName,
+                    Properties = new Dictionary<string, string>
+                    {
+                        { "DocumentId", download.DocumentId },
+                    }
+                };
+                await UploadAsync(file, download.Bytes);
+                Context.GetLogger().Info($"Persisted {download.DocumentId} {file.Name}");
+            });
+        }
 
-                foreach (var file in result.Files)
-                {
-                    folderIdsByName[file.Name] = file.Id;
-                }
+        private async Task<string> CreateFolder(string parentId, string name)
+        {
+            var list = _service.Files.List();
+            list.Q = $"'{parentId}' in parents and name = '{name}' and mimeType = 'application/vnd.google-apps.folder'";
+            list.Fields = "files(id)";
+            var response = await list.ExecuteAsync();
+            var id = response.Files
+                .Select(x => x.Id)
+                .FirstOrDefault();
 
-                if (folderIdsByName.TryGetValue(name, out folderId)) return folderId;
-
-                var newFolder = new Google.Apis.Drive.v3.Data.File
+            if (id == null)
+            {
+                var file = new Google.Apis.Drive.v3.Data.File
                 {
                     Name = name,
-                    MimeType = folderMimeType,
+                    MimeType = "application/vnd.google-apps.folder",
+                    Parents = new[] { parentId },
                 };
-                if (parentId != null)
-                {
-                    newFolder.Parents = new[] { parentId };
-                }
-                var newFolderRequest = service.Files.Create(newFolder);
-                newFolderRequest.Fields = "id";
-                var newFolderResult = newFolderRequest.Execute();
-                return folderIdsByName[name] = newFolderResult.Id;
+                var request = _service.Files.Create(file);
+                request.Fields = "id";
+                var result = request.Execute();
+                id = result.Id;
             }
-            var rootFolder = GetOrAddFolder(settings.Path);
 
-            ReceiveAsync<DocumentManifest>(async documentManifest =>
-            {
-                var documentId = documentManifest.DocumentReference["documentId"] as string;
-                var documentFolderId = GetOrAddFolder(documentId, rootFolder);
-                var referenceJson = JsonConvert.SerializeObject(documentManifest.DocumentReference);
-                using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(referenceJson)))
-                {
-                    var file = new Google.Apis.Drive.v3.Data.File
-                    {
-                        Name = $"reference.json",
-                        Parents = new[] { documentFolderId },
-                        MimeType = "application/json",
-                    };
-                    var request = service.Files.Create(file, stream, file.MimeType);
-                    await request.UploadAsync();
-                    Context.GetLogger().Info($"Persisted {documentId} {file.Name}");
-                }
-                using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(documentManifest.DocumentJson)))
-                {
-                    var file = new Google.Apis.Drive.v3.Data.File
-                    {
-                        Name = $"document.json",
-                        Parents = new[] { documentFolderId },
-                        MimeType = "application/json",
-                    };
-                    var request = service.Files.Create(file, stream, file.MimeType);
-                    await request.UploadAsync();
-                    Context.GetLogger().Info($"Persisted {documentId} {file.Name}");
-                }
-            });
-
-            ReceiveAsync<Download>(async download =>
-            {
-                var documentFolderId = GetOrAddFolder(download.DocumentId, rootFolder);
-                using (var stream = new MemoryStream(download.Bytes))
-                {
-                    var sanitizedOriginalFileName = Regex.Replace(download.OriginalFileName, @"\W", "-");
-                    var file = new Google.Apis.Drive.v3.Data.File
-                    {
-                        Name = $"{download.DocumentId}-{download.Tag}-{sanitizedOriginalFileName}",
-                        Parents = new[] { documentFolderId },
-                        MimeType = download.ContentType,
-                    };
-                    var request = service.Files.Create(file, stream, file.MimeType);
-                    await request.UploadAsync();
-                    Context.GetLogger().Info($"Persisted {download.DocumentId} {file.Name}");
-                }
-            });
+            return _folderIdsByName[name] = id;
         }
 
-        #region Messages
-        public class DocumentManifest
+        private async Task UploadAsync(Google.Apis.Drive.v3.Data.File file, byte[] bytes)
         {
-            public IDictionary<string, object> DocumentReference { get; set; }
-            public string DocumentJson { get; set; }
+            var list = _service.Files.List();
+            list.Q = $"'{file.Parents[0]}' in parents and name = '{file.Name}'";
+            list.Fields = "files(id)";
+            var response = await list.ExecuteAsync();
+            var id = response.Files
+                .Select(x => x.Id)
+                .FirstOrDefault();
+
+            using (var stream = new MemoryStream(bytes))
+            {
+                if (id == null)
+                {
+                    var create = _service.Files.Create(file, stream, file.MimeType);
+                    create.KeepRevisionForever = true;
+                    await create.UploadAsync();
+                }
+                else
+                {
+                    var update = _service.Files.Update(file, id, stream, file.MimeType);
+                    update.KeepRevisionForever = true;
+                    await update.UploadAsync();
+                }
+            }
         }
-        public class Download
-        {
-            public string DocumentId { get; set; }
-            public byte[] Bytes { get; set; }
-            public string Tag { get; set; }
-            public string ContentType { get; set; }
-            public string OriginalFileName { get; set; }
-        }
-        #endregion
     }
 }
