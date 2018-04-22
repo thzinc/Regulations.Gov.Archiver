@@ -1,8 +1,6 @@
 namespace Regulations.Gov.Downloader.Actors
 {
-    public class GetRecentDocuments
+    public class GetRecentDocuments : GetDocuments
     {
-        public int PageOffset { get; set; }
     }
-
 }

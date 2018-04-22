@@ -17,9 +17,9 @@ namespace Regulations.Gov.Downloader.Actors
     public class Requester : ReceiveActor, IWithUnboundedStash
     {
         public IStash Stash { get; set; }
-        private readonly TimeSpan HardWaitPeriod = TimeSpan.FromMinutes(5);
+        private readonly TimeSpan HardWaitPeriod = TimeSpan.FromMinutes(1);
         private readonly int SoftWaitRequestThreshold = 5;
-        private readonly TimeSpan SoftWaitPeriod = TimeSpan.FromMinutes(1);
+        private readonly TimeSpan SoftWaitPeriod = TimeSpan.FromMinutes(0.5);
         private readonly int DaysSinceModified = 7;
         private readonly IRegulationsGovApi _client;
         public Requester(IRegulationsGovApi client)
@@ -33,37 +33,14 @@ namespace Regulations.Gov.Downloader.Actors
             var documentIds = new HashSet<string>();
             ReceiveAsync<GetRecentDocuments>(async request =>
             {
-                var (success, response) = await GetResponse(request, r => _client.GetRecentDocumentsAsync(DaysSinceModified, r.PageOffset));
-                if (success)
-                {
-                    var documentsResponse = response.GetContent();
-                    var pageOffset = request.PageOffset + documentsResponse.Documents.Count;
-                    if (pageOffset < documentsResponse.TotalNumRecords)
-                    {
-                        Self.Tell(new GetRecentDocuments
-                        {
-                            PageOffset = pageOffset,
-                        });
-                    }
-                    else
-                    {
-                        Become(() => Downloading(documentIds));
-                    }
+                var response = await GetResponse(request, r => _client.GetRecentDocumentsAsync(DaysSinceModified, r.PageOffset));
+                HandleResponse(documentIds, request, response);
+            });
 
-                    foreach (var documentReference in documentsResponse.Documents)
-                    {
-                        documentIds.Add(documentReference.DocumentId);
-                        var json = JsonConvert.SerializeObject(documentReference as IDictionary<string, object>);
-                        Context.Parent.Tell(new PersistFile
-                        {
-                            Bytes = Encoding.UTF8.GetBytes(json),
-                            ContentType = "application/json",
-                            DocumentId = documentReference.DocumentId,
-                            Tag = "reference",
-                            OriginalFileName = "reference.json",
-                        });
-                    }
-                }
+            ReceiveAsync<GetDocuments>(async request =>
+            {
+                var response = await GetResponse(request, r => _client.GetDocumentsAsync(r.PageOffset));
+                HandleResponse(documentIds, request, response);
             });
 
             Context.GetLogger().Info("Waiting to discover documents...");
@@ -107,6 +84,7 @@ namespace Regulations.Gov.Downloader.Actors
                     foreach (var getDownloadRequest in attachments.Concat(downloads))
                     {
                         documentIds.Add(getDownloadRequest.Key);
+                        Self.Tell(getDownloadRequest);
                     }
                 }
 
@@ -122,15 +100,9 @@ namespace Regulations.Gov.Downloader.Actors
                 var (success, response) = await GetResponse(request, r => _client.GetDownloadAsync(r.Url));
                 if (success)
                 {
-                    var bytes = await response.ResponseMessage.Content.ReadAsByteArrayAsync();
-                    response.ResponseMessage.Headers.TryGetValues("Content-Disposition", out var contentDispositions);
-                    var originalFileName = contentDispositions.FirstOrDefault()?
-                        .Split(";", 2).Skip(1)
-                        .SelectMany(s => s.Split("=", 2).Skip(1))
-                        .Select(s => s.Trim('"'))
-                        .FirstOrDefault();
-                    response.ResponseMessage.Headers.TryGetValues("Content-Type", out var contentTypes);
-                    var contentType = contentTypes.FirstOrDefault();
+                    var bytes = await response.ResponseMessage.Content.ReadAsByteArrayAsync();                    
+                    var originalFileName = response.ResponseMessage.Content.Headers.ContentDisposition?.FileName?.Trim('"');
+                    var contentType = response.ResponseMessage.Content.Headers.ContentType.MediaType;
                     Context.Parent.Tell(new PersistFile
                     {
                         DocumentId = request.DocumentId,
@@ -193,9 +165,7 @@ namespace Regulations.Gov.Downloader.Actors
             }
             else if (!response.ResponseMessage.IsSuccessStatusCode)
             {
-                Context.GetLogger().Error(response.StringContent);
-                Context.GetLogger().Info("Going to attempt this message again");
-                Self.Tell(message);
+                Context.GetLogger().Error($"Could not download {response.ResponseMessage.RequestMessage.RequestUri}: {response.ResponseMessage.StatusCode} - {response.StringContent}");
                 return (false, null);
             }
 
@@ -205,6 +175,43 @@ namespace Regulations.Gov.Downloader.Actors
             }
 
             return (true, response);
+        }
+
+        private void HandleResponse<TRequest>(HashSet<string> documentIds, TRequest request, (bool Success, Response<DocumentsResponse>) result)
+            where TRequest : GetDocuments, new()
+        {
+            var (success, response) = result;
+            if (success)
+            {
+                var documentsResponse = response.GetContent();
+                foreach (var documentReference in documentsResponse.Documents)
+                {
+                    documentIds.Add(documentReference.DocumentId);
+                    var json = JsonConvert.SerializeObject(documentReference as IDictionary<string, object>);
+                    Context.Parent.Tell(new PersistFile
+                    {
+                        Bytes = Encoding.UTF8.GetBytes(json),
+                        ContentType = "application/json",
+                        DocumentId = documentReference.DocumentId,
+                        Tag = "reference",
+                        OriginalFileName = "reference.json",
+                    });
+                }
+
+                var pageOffset = request.PageOffset + documentsResponse.Documents.Count;
+                Context.GetLogger().Info($"Discovered {pageOffset} of {documentsResponse.TotalNumRecords} documents");
+                // if (pageOffset < documentsResponse.TotalNumRecords)
+                // {
+                //     Self.Tell(new TRequest
+                //     {
+                //         PageOffset = pageOffset,
+                //     });
+                // }
+                // else
+                // {
+                    Become(() => Downloading(documentIds));
+                // }
+            }
         }
 
         #region Messages

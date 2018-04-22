@@ -5,6 +5,8 @@ using System.IO;
 namespace Regulations.Gov.Downloader.Clients
 {
     [AllowAnyStatusCode]
+    [Header("User-Agent", "Regulations.Gov.Downloader")]
+    [Header("Cache-Control", "no-cache")]
     public interface IRegulationsGovApi
     {
         [Query("api_key")]
