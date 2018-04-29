@@ -1,15 +1,45 @@
 version: '2.2'
 services:
-  downloader:
+  downloader.current:
     image: thzinc/regulations-gov-downloader:${version:-latest}
     build:
       context: .
       dockerfile: ./src/Regulations.Gov.Downloader/Dockerfile
       args:
         version: ${version:-0.0.0-development}
+    env_file:
+      - ./.env
     environment:
       GoogleKeyJsonPath: /data/key.json
     restart: on-failure
+  downloader.past:
+    image: thzinc/regulations-gov-downloader:${version:-latest}
+    build:
+      context: .
+      dockerfile: ./src/Regulations.Gov.Downloader/Dockerfile
+      args:
+        version: ${version:-0.0.0-development}
+    env_file:
+      - ./.env
+    environment:
+      GoogleKeyJsonPath: /data/key.json
+      DownloadAllDocuments: "true"
+    restart: on-failure
+  ingester:
+    image: thzinc/regulations-gov-ingester:${version:-latest}
+    build:
+      context: .
+      dockerfile: ./src/Regulations.Gov.Ingester/Dockerfile
+      args:
+        version: ${version:-0.0.0-development}
+    env_file:
+      - ./.env
+    environment:
+      ElasticsearchUrl: "http://elasticsearch-ingress:9200"
+      GoogleKeyJsonPath: /data/key.json
+    restart: on-failure
+    networks:
+      - esnet
   archiver:
     image: thzinc/regulations-gov-archiver:${version:-latest}
     build:

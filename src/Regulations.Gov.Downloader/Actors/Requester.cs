@@ -22,6 +22,15 @@ namespace Regulations.Gov.Downloader.Actors
         private readonly TimeSpan SoftWaitPeriod = TimeSpan.FromMinutes(0.5);
         private readonly int DaysSinceModified = 7;
         private readonly IRegulationsGovApi _client;
+
+        protected override SupervisorStrategy SupervisorStrategy()
+        {
+            return new OneForOneStrategy(
+                maxNrOfRetries: 10,
+                withinTimeRange: TimeSpan.FromMinutes(1),
+                localOnlyDecider: ex => Directive.Restart);
+        }
+
         public Requester(IRegulationsGovApi client)
         {
             _client = client;
@@ -186,36 +195,55 @@ namespace Regulations.Gov.Downloader.Actors
             where TRequest : GetDocuments, new()
         {
             var (success, response) = result;
+            var retry = false;
             if (success)
             {
-                var documentsResponse = response.GetContent();
-                foreach (var documentReference in documentsResponse.Documents)
+                try
                 {
-                    documentIds.Add(documentReference.DocumentId);
-                    var json = JsonConvert.SerializeObject(documentReference as IDictionary<string, object>);
-                    Context.Parent.Tell(new PersistFile
+                    var documentsResponse = response.GetContent();
+                    foreach (var documentReference in documentsResponse.Documents)
                     {
-                        Bytes = Encoding.UTF8.GetBytes(json),
-                        ContentType = "application/json",
-                        DocumentId = documentReference.DocumentId,
-                        Tag = "reference",
-                        OriginalFileName = "reference.json",
-                    });
-                }
+                        documentIds.Add(documentReference.DocumentId);
+                        var json = JsonConvert.SerializeObject(documentReference as IDictionary<string, object>);
+                        Context.Parent.Tell(new PersistFile
+                        {
+                            Bytes = Encoding.UTF8.GetBytes(json),
+                            ContentType = "application/json",
+                            DocumentId = documentReference.DocumentId,
+                            Tag = "reference",
+                            OriginalFileName = "reference.json",
+                        });
+                    }
 
-                var pageOffset = request.PageOffset + documentsResponse.Documents.Count;
-                Context.GetLogger().Info($"Discovered {pageOffset} of {documentsResponse.TotalNumRecords} documents");
-                if (pageOffset < documentsResponse.TotalNumRecords)
-                {
-                    Self.Tell(new TRequest
+                    var pageOffset = request.PageOffset + documentsResponse.Documents.Count;
+                    Context.GetLogger().Info($"Discovered {pageOffset} of {documentsResponse.TotalNumRecords} documents");
+                    if (pageOffset < documentsResponse.TotalNumRecords)
                     {
-                        PageOffset = pageOffset,
-                    });
+                        Self.Tell(new TRequest
+                        {
+                            PageOffset = pageOffset,
+                        });
+                    }
+                    else
+                    {
+                        Become(() => Downloading(documentIds));
+                    }
                 }
-                else
+                catch (JsonSerializationException jse)
                 {
-                    Become(() => Downloading(documentIds));
+                    Context.GetLogger().Error(jse, "Caught exception while deserializing; re-requesting...");
+                    retry = true;    
                 }
+                catch (Exception e)
+                {
+                    Context.GetLogger().Error(e, "Unknown exception; re-requesting...");
+                    retry = true;
+                }
+            }
+
+            if (retry)
+            {
+                Self.Tell(request);
             }
         }
 

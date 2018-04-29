@@ -19,6 +19,14 @@ namespace Regulations.Gov.Downloader.Actors
         private readonly DriveService _service;
         private readonly Dictionary<string, string> _folderIdsByName = new Dictionary<string, string>();
 
+        protected override SupervisorStrategy SupervisorStrategy()
+        {
+            return new OneForOneStrategy(
+                maxNrOfRetries: null,
+                withinTimeRange: TimeSpan.FromMinutes(1),
+                localOnlyDecider: ex => Directive.Restart);
+        }
+
         public Persister(DriveService service, GoogleSettings settings)
         {
             _service = service;
@@ -49,8 +57,13 @@ namespace Regulations.Gov.Downloader.Actors
                     Parents = new[] { folder },
                     MimeType = download.ContentType,
                     OriginalFilename = download.OriginalFileName,
+                    AppProperties = new Dictionary<string, string>
+                    {
+                        { "Collection", "Regulations.Gov" },
+                    },
                     Properties = new Dictionary<string, string>
                     {
+                        { "Source", $"{typeof(Persister).FullName}" },
                         { "DocumentId", download.DocumentId },
                     }
                 };

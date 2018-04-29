@@ -7,8 +7,9 @@ using Microsoft.Extensions.Configuration;
 using Serilog;
 using Microsoft.Extensions.Logging;
 using Autofac;
+using GoogleClient;
 
-namespace Regulations.Gov.Archiver
+namespace Regulations.Gov.Ingester
 {
     public class Program
     {
@@ -39,18 +40,22 @@ namespace Regulations.Gov.Archiver
                 e.SetObserved();
             };
 
-            var apiKey = Configuration["DataGovApiKey"];
             var elasticSearchUrl = new Uri(Configuration["ElasticsearchUrl"]);
-            var downloadPath = Configuration["DownloadPath"];
-
+            logger.LogInformation($"Using {elasticSearchUrl} for ES");
+            
             // Setup Autofac
             ContainerBuilder builder = new ContainerBuilder();
+            builder.RegisterModule(new GoogleModule(Configuration["GoogleKeyJsonPath"], Configuration["GoogleDriveUser"], Configuration["GoogleDrivePath"]));
             builder.RegisterInstance<ElasticClient>(GetElasticClient(elasticSearchUrl));
+            builder.RegisterType<Actors.Coordinator>();
+            builder.RegisterType<Actors.Discoverer>();
+            builder.RegisterType<Actors.Downloader>();
+            builder.RegisterType<Actors.Ingester>();
             var container = builder.Build();
 
             using (var runner = new Runner(container))
             {
-                logger.LogInformation("Starting Regulations.Gov.Archiver...");
+                logger.LogInformation("Starting Regulations.Gov.Ingester...");
                 runner.Start();
                 AssemblyLoadContext.Default.Unloading += _ => runner.Stop();
                 Console.CancelKeyPress += (_, ea) =>
@@ -58,20 +63,21 @@ namespace Regulations.Gov.Archiver
                     runner.Stop();
                     ea.Cancel = true;
                 };
-                logger.LogInformation("Regulations.Gov.Archiver started!");
+                logger.LogInformation("Regulations.Gov.Ingester started!");
 
                 runner.Wait();
 
-                logger.LogInformation("Stopping Regulations.Gov.Archiver...");
+                logger.LogInformation("Stopping Regulations.Gov.Ingester...");
             }
 
-            logger.LogInformation("Regulations.Gov.Archiver stopped!");
+            logger.LogInformation("Regulations.Gov.Ingester stopped!");
         }
 
         private static ElasticClient GetElasticClient(Uri elasticSearchUrl)
         {
             var config = new ConnectionSettings(elasticSearchUrl);
             var elasticClient = new ElasticClient(config);
+            if (!elasticClient.CatHealth().IsValid) throw new InvalidOperationException($"Elasticsearch is not healthy! {elasticSearchUrl}");
             return elasticClient;
         }
     }

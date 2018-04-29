@@ -43,6 +43,10 @@ namespace Regulations.Gov.Downloader
             ContainerBuilder builder = new ContainerBuilder();
             builder.RegisterModule(new RegulationsGovClientModule(Configuration["DataGovApiKey"]));
             builder.RegisterModule(new GoogleModule(Configuration["GoogleKeyJsonPath"], Configuration["GoogleDriveUser"], Configuration["GoogleDrivePath"]));
+            builder.RegisterInstance(new Actors.CoordinatorSettings
+            {
+                DownloadAllDocuments = bool.TryParse(Configuration["DownloadAllDocuments"], out var b) && b,
+            });
             builder.RegisterType<Actors.Coordinator>();
             builder.RegisterType<Actors.Requester>();
             builder.RegisterType<Actors.Persister>();

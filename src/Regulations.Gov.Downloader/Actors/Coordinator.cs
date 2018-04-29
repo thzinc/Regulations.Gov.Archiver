@@ -10,7 +10,7 @@ namespace Regulations.Gov.Downloader.Actors
 
     public class Coordinator : ReceiveActor
     {
-        public Coordinator()
+        public Coordinator(CoordinatorSettings settings)
         {
             Context.GetLogger().Info("Running coordinator");
             var recentDocumentsRequester = Context.ActorOf(Context.DI().Props<Requester>(), "RecentDocumentsRequester");
@@ -21,10 +21,14 @@ namespace Regulations.Gov.Downloader.Actors
 
             ReceiveAny(_ => Context.GetLogger().Info("Received unknown message"));
 
-            // TODO: Make this configurable
-            allDocumentsRequester.Tell(new GetDocuments());
-
-            Context.System.Scheduler.ScheduleTellRepeatedly(TimeSpan.Zero, TimeSpan.FromDays(1), recentDocumentsRequester, new GetRecentDocuments(), Self);
+            if (settings.DownloadAllDocuments)
+            {
+                allDocumentsRequester.Tell(new GetDocuments());
+            }
+            else
+            {
+                Context.System.Scheduler.ScheduleTellRepeatedly(TimeSpan.Zero, TimeSpan.FromDays(1), recentDocumentsRequester, new GetRecentDocuments(), Self);
+            }
         }
 
         #region Messages
